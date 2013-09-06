@@ -1,4 +1,3 @@
-
 #include "hulk/core/logger.h"
 #include "hulk/fix/tcp.h"
 #include "hulk/exchange/order.h"
@@ -16,30 +15,23 @@ orderbook global_book;
 // -----------------------------------------------------------------------------
 bool fill( order& new_order, order& book_order )
 {
-    px px;
+    order* buy;
+    order* sell;
 
-    if( new_order._side == BUY )
-    {
-        if( new_order._px >= book_order.px ) {
-            px = new_order._px;
-        }
+    if( new_order._side == BUY ) {
+        buy = &new_order; sell = &book_order;
+    } else {
+        buy = &book_order; sell = &new_order;
     }
-    else
-    {
-        px = std::max( new_order, book_order );
-    }
-
-    qty qty = 0;
-
-
 
     if( sell->_px <= buy->_px )
     {
+        px px = book_order._px;
         qty qty = new_order._leaves_qty < book_order._leaves_qty ?
             new_order._leaves_qty : book_order._leaves_qty;
 
-        new_order.fill( qty, book_order._px );
-        book_order.fill( qty, book_order._px );
+        new_order.fill( qty, px );
+        book_order.fill( qty, px );
 
         return true;
     }
