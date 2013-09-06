@@ -2,7 +2,9 @@ hulk-exchange
 =============
 
 cd ~
+
 rm -rf hulk-*
+
 mkdir -p hulk-build/core
 mkdir -p hulk-build/fix
 mkdir -p hulk-build/script
