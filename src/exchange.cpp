@@ -10,8 +10,6 @@ using namespace hulk::exchange;
 
 core::log& log = core::logger::instance().get( "hulk.exchange" );
 
-orderbook global_book;
-
 // -----------------------------------------------------------------------------
 bool fill( order& new_order, order& book_order )
 {
@@ -26,17 +24,24 @@ bool fill( order& new_order, order& book_order )
 
     if( sell->_px <= buy->_px )
     {
-        px px = book_order._px;
-        qty qty = new_order._leaves_qty < book_order._leaves_qty ?
-            new_order._leaves_qty : book_order._leaves_qty;
+        LOG_DEBUG( log, "matched! " <<
+            "B " << buy->_order_qty << " @ " << buy->_px << " versus " <<
+            "S " << sell->_order_qty << " @ " << sell->_px );
 
-        new_order.fill( qty, px );
-        book_order.fill( qty, px );
+        qty qty = std::min( new_order._leaves_qty, book_order._leaves_qty );
+        new_order.fill( qty, book_order._px );
+        book_order.fill( qty, book_order._px );
 
         return true;
     }
+    else
+    {
+        LOG_DEBUG( log, "no match! " <<
+            "B " << buy->_order_qty << " @ " << buy->_px << " versus " <<
+            "S " << sell->_order_qty << " @ " << sell->_px );
 
-    return false;
+        return false;
+    }
 }
 
 template< typename TOrders >
@@ -49,19 +54,6 @@ void match( order& order, orderbook& book, TOrders& book_orders )
     while( it != book_orders.end() && !order.is_filled() )
     {
         book_order = it->second;
-
-        if( order._side == BUY )
-        {
-            LOG_INFO( log, "match1? "
-                << "B " << order._order_qty << " @ " << order._px << " v "
-                << "S " << book_order->_order_qty << " @ " << book_order->_px );
-        }
-        else
-        {
-            LOG_INFO( log, "match2? "
-                << "B " << book_order->_order_qty << " @ " << book_order->_px << " v "
-                << "S " << order._order_qty << " @ " << order._px );
-        }
 
         if( !fill( order, *book_order ) ) {
             LOG_INFO( log, "no match!" ); break;
@@ -135,7 +127,7 @@ struct my_order_callback : public order::callback
         body.push_back( fix::field( 38, o._order_qty ) );
         body.push_back( fix::field( 44, o._px ) );
         body.push_back( fix::field( 54, o._side == BUY ? 1 : 2 ) );
-        body.push_back( fix::field( 55, "ABC.L" ) );
+        body.push_back( fix::field( 55, o._symbol ) );
         body.push_back( fix::field( 150, exec_type ) );
     }
 
@@ -173,8 +165,56 @@ struct my_order_callback : public order::callback
 };
 
 // -----------------------------------------------------------------------------
+struct my_orderbook_callback : public orderbook::callback
+{
+    typedef std::map< px, qty, std::greater< px > > buy_orders;
+    typedef std::map< px, qty, std::less< px > > sell_orders;
+
+    buy_orders _buy_orders;
+    sell_orders _sell_orders;
+
+    virtual void on_add( const orderbook& book, const order& order )
+    {
+        if( order._side == BUY ) {
+            _buy_orders[order._px] += order._leaves_qty;
+        } else {
+            _sell_orders[order._px] += order._leaves_qty;
+        }
+    }
+
+    virtual void on_del( const orderbook& book, const order& order )
+    {
+        if( order._side == BUY ) {
+            _buy_orders[order._px] -= order._leaves_qty;
+        } else {
+            _sell_orders[order._px] -= order._leaves_qty;
+        }
+    }
+
+    std::string& to_string( std::string& s )
+    {
+        std::stringstream ss;
+
+        for( buy_orders::iterator it = _buy_orders.begin(); it != _buy_orders.end(); it++ ) {
+            ss << "B " << it->second << " @ " << it->first << "\n";
+        }
+
+        for( sell_orders::iterator it = _sell_orders.begin(); it != _sell_orders.end(); it++ ) {
+            ss << "S " << it->second << " @ " << it->first << "\n";
+        }
+
+        s = ss.str();
+
+        return s;
+    }
+};
+
+// -----------------------------------------------------------------------------
 typedef std::map< id, order* > id_to_order_map;
 id_to_order_map txn_to_order;
+
+std::map< std::string, orderbook > orderbooks;
+std::map< std::string, my_orderbook_callback > orderbook_callbacks;
 
 class order_entry_session : public fix::session
 {
@@ -211,7 +251,7 @@ public:
             switch( msg[i]._tag )
             {
                 case 35: msg_type = msg[i]._value;
-                case 11: txn_id = atoi( msg[i]._value.c_str() ); break;
+                case 11: txn_id = msg[i]._value; break;
                 case 38: qty = atoi( msg[i]._value.c_str() ); break;
                 case 44: px = atof( msg[i]._value.c_str() ); break;
                 case 54: side = ( msg[i]._value[0] == '1' ? BUY : SELL ); break;
@@ -219,14 +259,25 @@ public:
             }
         }
 
+        orderbook& book = orderbooks[symbol];
+        book.set_callback( orderbook_callbacks[symbol] );
+
+        LOG_DEBUG( log,
+            "msg_type=" << msg_type << ", " <<
+            "txn_id=" << txn_id << ", " <<
+            "qty=" << qty << ", " <<
+            "px=" << px << ", " <<
+            "side=" << ( side == BUY ? "B" : "S" ) << ", " <<
+            "symbol=" << symbol );
+
         if( msg_type == "D" )
         {
             LOG_INFO( log, "new order " << txn_id );
 
-            order* o = new order( txn_id, side, qty, px );
+            order* o = new order( symbol, txn_id, side, qty, px );
             o->set_callback( cb );
             o->set_session( *this );
-            process( *o, global_book );
+            process( *o, book );
 
             if( !o->is_filled() ) {
                 txn_to_order[ txn_id ] = o;
@@ -245,7 +296,7 @@ public:
                 o->ack();
 
                 txn_to_order.erase( txn_id );
-                global_book.del( *o );
+                book.del( *o );
             }
         }
         else
@@ -253,9 +304,12 @@ public:
             LOG_INFO( log, "ignored msg_type " << msg_type );
         }
 
-        LOG_INFO( log, "book has "
-            << global_book.get_buy_orders().size() << " buys and "
-            << global_book.get_sell_orders().size() << " sells" );
+        LOG_INFO( log, "book " << symbol << " has "
+            << book.get_buy_orders().size() << " buys and "
+            << book.get_sell_orders().size() << " sells" );
+
+        //std::string s;
+        //LOG_DEBUG( log, "book " << symbol << ":\n" << orderbook_callbacks[symbol].to_string( s ) );
     }
 
     int num_recvd;

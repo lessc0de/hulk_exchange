@@ -2,6 +2,8 @@
 #ifndef _hulk_exchange_types_h_
 #define _hulk_exchange_types_h_
 
+#include <string>
+
 namespace hulk {
 namespace exchange {
 
@@ -29,7 +31,9 @@ typedef double px;
 
 typedef unsigned long long qty;
 
-typedef unsigned long long id;
+//typedef unsigned long long id;
+
+typedef std::string id;
 
 }
 }

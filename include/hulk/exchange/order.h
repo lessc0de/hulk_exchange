@@ -22,8 +22,9 @@ public:
         virtual void on_fill( const order&, qty qty, px px ) {}
     };
 
-    order( id id, side side, qty qty, px px=0 )
-    : _state( PENDING_NEW ),
+    order( const std::string& symbol, id id, side side, qty qty, px px=0 )
+    : _symbol( symbol ),
+      _state( PENDING_NEW ),
       _id( id ),
       _side( side ),
       _order_qty( qty ),
@@ -90,6 +91,7 @@ public:
         }
     }
 
+    std::string _symbol;
     state _state;
     id _id;
     side _side;
