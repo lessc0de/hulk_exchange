@@ -159,7 +159,7 @@ struct my_order_callback : public order::callback
         body.push_back( fix::field( 32, qty ) );
 
         std::string buf;
-        session->send( "8", body );
+        session->send( "8", body, &buf );
         dc_callback->publish( buf );
     }
 };
