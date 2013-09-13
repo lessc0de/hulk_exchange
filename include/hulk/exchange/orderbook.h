@@ -15,20 +15,8 @@ public:
     typedef std::multimap< px, order*, std::greater< px > > buy_orders;
     typedef std::multimap< px, order*, std::less< px > > sell_orders;
 
-    struct callback
-    {
-        virtual void on_add( const orderbook& book, const order& order ) {}
-        virtual void on_del( const orderbook& book, const order& order ) {}
-    };
-
     orderbook()
-    : _cb( 0 )
     {
-    }
-
-    void set_callback( callback& cb )
-    {
-        _cb = &cb;
     }
 
     void add( order& order )
@@ -38,10 +26,6 @@ public:
         } else {
             _sell_orders.insert( sell_orders::value_type( order._px, &order ) );
         }
-
-        //if( _cb ) {
-        //    _cb->on_add( *this, order );
-        //}
     }
 
     void del( order& order )
@@ -51,10 +35,6 @@ public:
         } else {
             del_order( _sell_orders, order );
         }
-
-        //if( _cb ) {
-        //    _cb->on_del( *this, order );
-        //}
     }
 
     template< typename TIter >
@@ -65,10 +45,6 @@ public:
         } else {
             _sell_orders.erase( it );
         }
-
-        //if( _cb ) {
-        //    _cb->on_del( *this, *it->second );
-        //}
     }
 
     buy_orders& get_buy_orders() {
@@ -95,7 +71,6 @@ private:
 
     buy_orders _buy_orders;
     sell_orders _sell_orders;
-    callback* _cb;
 };
 
 }
