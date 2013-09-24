@@ -31,7 +31,7 @@ typedef double px;
 
 typedef unsigned long long qty;
 
-typedef unsigned long long id;
+typedef std::string id;
 
 typedef unsigned char reason;
 
