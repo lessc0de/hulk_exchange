@@ -1,5 +1,5 @@
 cmake_minimum_required( VERSION 2.8 )
-project( hulk-exchange )
+project( hulk_exchange )
 
 include_directories( include )
 include_directories( ~/hulk-core/include )
