@@ -26,7 +26,7 @@ function cxl( session )
     return session:send( "F", body );
 end
 
-oe_session = fix.new_initiator( "tcp://localhost:8001", "FIX.4.4", header );
+oe_session = fix.new_initiator( "tcp://localhost:5554", "FIX.4.4", header );
 
 -- send an order and cxl it
 nos( oe_session, "AAA.L", 1, 100, 100 );

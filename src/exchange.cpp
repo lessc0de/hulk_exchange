@@ -1,8 +1,14 @@
+
 #include "hulk/core/logger.h"
+
+#include "hulk/fix/acceptor.h"
+#include "hulk/fix/session_factory.h"
 #include "hulk/fix/tcp.h"
+
 #include "hulk/exchange/order.h"
 #include "hulk/exchange/orderbook.h"
 
+#include <sys/socket.h>
 #include <set>
 
 using namespace hulk;
@@ -81,70 +87,6 @@ void process( order& order, orderbook& book )
 }
 
 // -----------------------------------------------------------------------------
-struct drop_copy_callback : public tcp_callback
-{
-    virtual void on_open( tcp_context& c )
-    {
-        LOG_INFO( l, "drop copy client connected" );
-        _fds.insert( c._fd );
-    }
-
-    virtual void on_close( tcp_context& c )
-    {
-        LOG_INFO( l, "drop copy client disconnected" );
-        _fds.erase( c._fd );
-    }
-
-    void publish( const std::string& s )
-    {
-        if( _fds.size() )
-        {
-            LOG_INFO( l, "publishing to " << _fds.size() << " drop copy clients" );
-
-            std::set< int >::iterator it = _fds.begin();
-            while( it != _fds.end() )
-            {
-                ::send( *it, (s+"\r\n").c_str(), s.size(), 0 );
-                ++it;
-            }
-        }
-    }
-
-    std::set< int > _fds;
-};
-
-drop_copy_callback* dc_callback = new drop_copy_callback;
-
-// -----------------------------------------------------------------------------
-class market_data_session;
-
-std::set< market_data_session* > md_sessions;
-
-struct market_data_session : public fix::session
-{
-    market_data_session( fix::transport& transport )
-    : fix::session( transport )
-    {
-        LOG_INFO( l, "created market_data_session @ " << this );
-
-        fix::fields header;
-        header.push_back( fix::field( 49, "HULK-MD" ) );
-        header.push_back( fix::field( 50, "HULK-MD-S" ) );
-        header.push_back( fix::field( 56, "HULK-CLIENT" ) );
-        set_protocol( "FIX.4.4" );
-        set_header( header );
-
-        md_sessions.insert( this );
-    }
-
-    virtual void closed()
-    {
-        LOG_INFO( l, "closed market_data_session @ " << this );
-        md_sessions.erase( this );
-    }
-};
-
-// -----------------------------------------------------------------------------
 struct my_order_callback : public order::callback
 {
     void build_msg( const order& o, fix::fields& body, const fix::value& exec_type )
@@ -171,7 +113,6 @@ struct my_order_callback : public order::callback
 
         std::string buf;
         session->send( "8", body, &buf );
-        dc_callback->publish( buf );
     }
 
     virtual void on_fill( const order& o, qty qty, px px )
@@ -186,14 +127,10 @@ struct my_order_callback : public order::callback
 
         std::string buf;
         session->send( "8", body, &buf );
-        dc_callback->publish( buf );
     }
 };
 
 // -----------------------------------------------------------------------------
-typedef std::map< px, qty, std::greater< px > > buy_levels;
-typedef std::map< px, qty, std::less< px > > sell_levels;
-
 typedef std::map< id, order* > id_to_order_map;
 id_to_order_map txn_to_order;
 
@@ -202,8 +139,7 @@ std::map< std::string, orderbook > orderbooks;
 class order_entry_session : public fix::session
 {
 public:
-    order_entry_session( fix::transport& transport )
-    : fix::session( transport ), num_recvd( 0 )
+    order_entry_session()
     {
         fix::fields header;
         header.push_back( fix::field( 49, "HULK-EXCHANGE" ) );
@@ -214,10 +150,8 @@ public:
         LOG_INFO( l, "created order_entry_session" );
     }
 
-    virtual void recv( const fix::fields& msg, const std::string buf )
+    virtual void on_recv( const fix::fields& msg, const std::string buf )
     {
-        dc_callback->publish( buf );
-
         LOG_INFO( l, "parsing " << msg.size() << " fields" );
 
         std::string msg_type;
@@ -287,93 +221,34 @@ public:
         LOG_INFO( l, "book " << symbol << " has "
             << book.get_buy_orders().size() << " buys and "
             << book.get_sell_orders().size() << " sells" );
-
-        publish_md( book, symbol );
     }
 
-    void publish_md( orderbook& book, const std::string& symbol, int n = 5 )
-    {
-        if( md_sessions.size() )
-        {
-            LOG_INFO( l, "publishing to " << md_sessions.size() << " market data clients" );
-
-            buy_levels blevels;
-
-            orderbook::buy_orders& bo = book.get_buy_orders();
-            for( orderbook::buy_orders::iterator it = bo.begin(); it != bo.end(); it++ )
-            {
-                if( blevels.find( it->first ) == blevels.end() ) {
-                    blevels[ it->first ] = it->second->_leaves_qty;
-                } else {
-                    blevels[ it->first ] += it->second->_leaves_qty;
-                }
-
-                if( blevels.size() > n ) {
-                    blevels.erase( it->first ); break;
-                }
-            }
-
-            sell_levels slevels;
-
-            orderbook::sell_orders& so = book.get_sell_orders();
-            for( orderbook::sell_orders::iterator it = so.begin(); it != so.end(); it++ )
-            {
-                if( slevels.find( it->first ) == slevels.end() ) {
-                    slevels[ it->first ] = it->second->_leaves_qty;
-                } else {
-                    slevels[ it->first ] += it->second->_leaves_qty;
-                }
-
-                if( slevels.size() > n ) {
-                    slevels.erase( it->first ); break;
-                }
-            }
-
-            fix::fields body;
-            body.push_back( fix::field( 55, symbol ) );
-
-            for( buy_levels::iterator it = blevels.begin(); it != blevels.end(); it++ )
-            {
-                body.push_back( fix::field( 132, it->first ) );
-                body.push_back( fix::field( 134, it->second ) );
-            }
-
-            for( sell_levels::iterator it = slevels.begin(); it != slevels.end(); it++ )
-            {
-                body.push_back( fix::field( 133, it->first ) );
-                body.push_back( fix::field( 135, it->second ) );
-            }
-
-            for( std::set< market_data_session* >::iterator it = md_sessions.begin(); it != md_sessions.end(); it++ ) {
-                (*it)->send( "i", body );
-            }
-        }
-    }
-
-    int num_recvd;
     my_order_callback cb;
+};
+
+class order_entry_session_factory : public fix::session_factory
+{
+public:
+    virtual fix::session* create()
+    {
+        return new order_entry_session;
+    }
 };
 
 // -----------------------------------------------------------------------------
 int main( int argc, char** argv )
 {
-    int port = 8001;
+    int port = 5554;
     LOG_INFO( l, "hulk exchange starting" );
 
-    fix::tcp_event_loop oe_eloop;
-    oe_eloop.new_acceptor< order_entry_session >( port );
-
-    fix::tcp_event_loop md_eloop;
-    md_eloop.new_acceptor< market_data_session >( port+2 );
-
-    tcp_event_loop dc_eloop;
-    dc_eloop.watch( tcp_bind( port+1 ), true, *dc_callback );
+    shared_ptr< fix::session_factory > factory( new order_entry_session_factory );
+    shared_ptr< fix::transport_callback > acceptor( new fix::acceptor( factory ) );
+    fix::tcp_event_loop eloop;
+    eloop.new_acceptor( port, acceptor );
 
     LOG_INFO( l, "starting main loop" );
     while( 1 )
     {
-        oe_eloop.loop();
-        dc_eloop.loop();
-        md_eloop.loop();
+        eloop.loop( 100 );
     }
 }
